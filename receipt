@@ -1,0 +1,245 @@
+import sqlite3
+from tkinter import *
+from tkinter import messagebox, ttk
+from reportlab.pdfgen import canvas
+import os
+import csv
+
+# ================= SETUP =================
+os.makedirs("receipts", exist_ok=True)
+DB = "pos.db"
+
+# ================= DATABASE =================
+def init_db():
+    with sqlite3.connect(DB) as conn:
+        cur = conn.cursor()
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS sales (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT,
+            time TEXT,
+            cashier TEXT,
+            total REAL
+        )
+        """)
+
+        conn.commit()
+
+# ================= CART =================
+cart = []
+
+# ================= ADD ITEM =================
+def add_item():
+    name = e_name.get().strip()
+    price = e_price.get().strip()
+    qty = e_qty.get().strip()
+
+    if not name or not price or not qty:
+        return messagebox.showerror("Error", "Fill all fields")
+
+    try:
+        price = float(price)
+        qty = int(qty)
+    except:
+        return messagebox.showerror("Error", "Invalid input")
+
+    cart.append((name, price, qty))
+    listbox.insert(END, f"{name} | ₱{price} x {qty}")
+
+    e_name.delete(0, END)
+    e_price.delete(0, END)
+    e_qty.delete(0, END)
+
+    update_total()
+
+# ================= TOTAL =================
+def update_total():
+    total = sum(p * q for _, p, q in cart)
+    e_total.delete(0, END)
+    e_total.insert(0, f"{total:.2f}")
+
+# ================= SAVE SALE =================
+def save_sale(date, time, cashier, total):
+    with sqlite3.connect(DB) as conn:
+        cur = conn.cursor()
+        cur.execute("""
+        INSERT INTO sales (date, time, cashier, total)
+        VALUES (?, ?, ?, ?)
+        """, (date, time, cashier, total))
+        conn.commit()
+
+# ================= DAILY SALES DATA =================
+def get_daily_sales():
+    with sqlite3.connect(DB) as conn:
+        cur = conn.cursor()
+        cur.execute("""
+        SELECT date, SUM(total)
+        FROM sales
+        GROUP BY date
+        ORDER BY date
+        """)
+        return cur.fetchall()
+
+# ================= PDF RECEIPT =================
+def generate_receipt(receipt_id, date, time, cashier, items, total):
+    file = f"receipts/receipt_{receipt_id}.pdf"
+    c = canvas.Canvas(file, pagesize=(200, 750))
+
+    y = 720
+
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(100, y, "PRO POS ENTERPRISE")
+    y -= 20
+
+    c.setFont("Helvetica", 8)
+    c.drawCentredString(100, y, "Premium Business System")
+    y -= 15
+
+    c.drawString(20, y, f"Receipt #{receipt_id}")
+    y -= 12
+    c.drawString(20, y, f"{date} {time}")
+    y -= 12
+    c.drawString(20, y, f"Cashier: {cashier}")
+    y -= 15
+
+    c.line(20, y, 180, y)
+    y -= 15
+
+    for name, price, qty in items:
+        subtotal = price * qty
+        c.drawString(20, y, name)
+        y -= 12
+        c.drawString(25, y, f"{qty} x ₱{price:.2f} = ₱{subtotal:.2f}")
+        y -= 15
+
+    c.line(20, y, 180, y)
+    y -= 20
+
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(20, y, f"TOTAL: ₱{total:.2f}")
+
+    c.save()
+
+# ================= CHECKOUT =================
+def checkout():
+    if not cart:
+        return messagebox.showerror("Error", "Cart empty")
+
+    date = e_date.get()
+    time = e_time.get()
+    cashier = e_cashier.get()
+
+    total = sum(p * q for _, p, q in cart)
+
+    with sqlite3.connect(DB) as conn:
+        cur = conn.cursor()
+        cur.execute("""
+        INSERT INTO sales (date, time, cashier, total)
+        VALUES (?, ?, ?, ?)
+        """, (date, time, cashier, total))
+        receipt_id = cur.lastrowid
+        conn.commit()
+
+    generate_receipt(receipt_id, date, time, cashier, cart, total)
+
+    cart.clear()
+    listbox.delete(0, END)
+    e_total.delete(0, END)
+
+    messagebox.showinfo("Success", "Sale completed")
+
+# ================= SALES GRAPH DASHBOARD =================
+def show_dashboard():
+    data = get_daily_sales()
+
+    if not data:
+        return messagebox.showinfo("No Data", "No sales yet")
+
+    labels = [d[0] for d in data]
+    values = [d[1] for d in data]
+
+    chart = {
+        "chartType": "line",
+        "meta": {
+            "title": "Daily Sales Report",
+            "description": "Total sales per day"
+        },
+        "xKey": "date",
+        "series": [
+            {
+                "dataKey": "total",
+                "label": "Sales",
+                "valuePrefix": "₱",
+                "valueFormat": "raw"
+            }
+        ],
+        "data": [{"date": labels[i], "total": values[i]} for i in range(len(labels))]
+    }
+
+    # 👇 ENTERPRISE DASHBOARD WINDOW
+    dash = Toplevel()
+    dash.title("Sales Dashboard")
+
+    from tkinter import ttk
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+    fig = Figure(figsize=(6,4))
+    ax = fig.add_subplot(111)
+
+    ax.plot(labels, values, marker="o")
+    ax.set_title("Daily Sales Report")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Sales (₱)")
+    ax.tick_params(axis='x', rotation=45)
+
+    canvas = FigureCanvasTkAgg(fig, master=dash)
+    canvas.draw()
+    canvas.get_tk_widget().pack()
+
+# ================= UI =================
+init_db()
+
+root = Tk()
+root.title("ENTERPRISE POS SYSTEM")
+root.geometry("500x700")
+
+Label(root, text="Date").pack()
+e_date = Entry(root)
+e_date.pack()
+
+Label(root, text="Time").pack()
+e_time = Entry(root)
+e_time.pack()
+
+Label(root, text="Cashier").pack()
+e_cashier = Entry(root)
+e_cashier.pack()
+
+Label(root, text="Item").pack()
+e_name = Entry(root)
+e_name.pack()
+
+Label(root, text="Price").pack()
+e_price = Entry(root)
+e_price.pack()
+
+Label(root, text="Qty").pack()
+e_qty = Entry(root)
+e_qty.pack()
+
+Button(root, text="Add Item", command=add_item).pack()
+
+listbox = Listbox(root)
+listbox.pack(fill=BOTH, expand=True)
+
+Label(root, text="Total").pack()
+e_total = Entry(root)
+e_total.pack()
+
+Button(root, text="Checkout", bg="green", fg="white", command=checkout).pack()
+
+Button(root, text="📊 Sales Dashboard", command=show_dashboard).pack()
+
+root.mainloop()
